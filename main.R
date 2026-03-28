@@ -4,6 +4,8 @@
 ## BU BF591
 ## Assignment Week 6
 
+#install.packages("ggVennDiagram")
+
 libs <- c("tidyverse", "ggVennDiagram", "BiocManager",
           "DESeq2", "edgeR", "limma")
 # if you don't have a package installed, use BiocManager::install() or 
@@ -14,6 +16,7 @@ for (package in libs) {
                                          character.only = T))
   require(package, character.only = T)
 }
+
 
 #### load and filter ####
 #' Load n' trim
@@ -33,7 +36,10 @@ for (package in libs) {
 #'
 #' @examples counts_df <- load_n_trim("/path/to/counts/verse_counts.tsv")
 load_n_trim <- function(filename) {
-    return(NULL)
+    counts <- read.table(filename, header =TRUE, sep = "\t", row.names = 1)
+    counts_df <- as.data.frame(counts)
+    counts_df <- counts_df[, c("vP0_1", "vP0_2", "vAd_1", "vAd_2")]
+    return(counts_df)
 }
 
 #' Perform a DESeq2 analysis of rna seq data
@@ -57,7 +63,19 @@ load_n_trim <- function(filename) {
 #'
 #' @examples run_deseq(counts_df, coldata, 10, "condition_day4_vs_day7")
 run_deseq <- function(count_dataframe, coldata, count_filter, condition_name) {
-    return(NULL)
+  
+  
+  dds <- DESeqDataSetFromMatrix(countData = count_dataframe,
+                                colData = coldata,
+                                design = ~ condition)
+  
+  dds <- dds[rowSums(counts(dds)) >= count_filter, ]
+  
+  dds <- DESeq(dds)
+  
+  results_df <- results(dds,name = condition_name)
+  
+  return(results_df)
 }
 
 #### edgeR ####
@@ -77,7 +95,18 @@ run_deseq <- function(count_dataframe, coldata, count_filter, condition_name) {
 #'
 #' @examples run_edger(counts_df, group)
 run_edger <- function(count_dataframe, group) {
-    return(NULL)
+  
+  group <- factor(group)
+  dge <- DGEList(counts = count_dataframe)
+  keep <- filterByExpr(dge, group = group)
+  dge <- DGEList(counts = count_dataframe[keep, ], group = group)  # rebuild with group for estimateDisp
+  
+  dge <- calcNormFactors(dge)
+  dge <- estimateDisp(dge)
+  et <- exactTest(dge)
+  results_df <- as.data.frame(topTags(et, n = nrow(dge)))[, c("logFC", "logCPM", "PValue")]
+  
+  return(results_df)
 }
 
  #### limma ####
@@ -101,7 +130,25 @@ run_edger <- function(count_dataframe, group) {
 #' 
 #' @examples run_limma(counts_df, design, voom=TRUE)
 run_limma <- function(counts_dataframe, design, group) {
-    return(NULL)
+  #filtering
+  dge <- DGEList(counts = counts_dataframe)
+  keep <- filterByExpr(dge, group = group)  #pass group for better filtering
+  counts_dataframe <- counts_dataframe[keep, ]
+  
+  #voom transformation to convert the count matrix
+  v <- voom(counts_dataframe, design)
+  
+  #fit a linear model 
+  fit <- lmFit(v, design)
+  
+  #apply empirical bayes smoothing, borrows info across genes to stabilize variance estimates 
+  fit <- eBayes(fit)
+  
+  #extract results with topTable
+  results_df <- topTable(fit, n = Inf, coef = 2, resort.by = "P")
+  
+  return(results_df)
+  
 }
 
 #### ggplot ####
@@ -133,7 +180,15 @@ run_limma <- function(counts_dataframe, design, group) {
 #' 2 deseq   9.97e-261
 #' 3 deseq   1.16e-206
 combine_pval <- function(deseq, edger, limma) {
-    return(NULL)
+  #extract the pvalue column from each different pacakge 
+  deseq_pval <- data.frame(package = "deseq", pval = deseq$pvalue)
+  edger_pval <- data.frame(package = "edger", pval = edger$PValue)
+  limma_pval <- data.frame(package = "limma", pval = limma$P.Value)
+  
+  #stack them vertically with rbind
+  combined <- rbind(deseq_pval, edger_pval, limma_pval)
+  
+  return(combined)
 }
 
 #' Create three separate facets for each of the diff. exp. pacakges.
@@ -157,7 +212,29 @@ combine_pval <- function(deseq, edger, limma) {
 #' 1  -9.84 2.23e-180 edgeR  
 #' 2   6.18 5.87e-179 edgeR  
 create_facets <- function(deseq, edger, limma) {
-    return(NULL)
+
+    deseq_df <- data.frame(
+      logFC   = deseq$log2FoldChange,
+      padj    = deseq$padj,
+      package = "DESeq2"
+    )
+    
+    edger_df <- data.frame(
+      logFC   = edger$logFC,
+      padj    = edger$padj,
+      package = "edgeR"
+    )
+    
+    limma_df <- data.frame(
+      logFC   = limma$day0vsadult,
+      padj    = limma$adj.P.Val,
+      package = "limma"
+    )
+    
+    combined <- rbind(deseq_df, edger_df, limma_df)
+    
+    return(combined)
+
 }
 
 #' Create an attractive volcano plot of three diff. exp. packages' data.
@@ -187,6 +264,52 @@ create_facets <- function(deseq, edger, limma) {
 #'
 #' @examples p <- theme_plot(volcano)
 theme_plot <- function(volcano_data) {
-    return(NULL)
+  
+  plot_data <- volcano_data %>%
+    dplyr::filter(!is.na(padj) & !is.na(logFC)) %>%
+    dplyr::mutate(
+      neg_log10_padj = -log10(padj),
+      status = dplyr::case_when(        
+          padj < 0.05 & logFC >  1 ~ "UP",
+          padj < 0.05 & logFC < -1 ~ "DOWN",
+          TRUE                     ~ "NS"
+        )
+      )
+  
+  plot <- ggplot2::ggplot(plot_data,
+                          ggplot2::aes(x = logFC,
+                                       y = neg_log10_padj,
+                                       color = status)) + 
+    ggplot2::geom_point(size = 1.5, alpha = 0.7) +
+    ggplot2::scale_color_manual(
+      values = c(
+        "UP"   = "#7FBC41",
+        "DOWN" = "#DE77AE",
+        "NS"   = "grey60"
+      )
+    ) +
+    ggplot2::facet_wrap(~ package) +  
+    ggplot2::labs(
+      title = "Volcano Plot for Differential Expression Results",
+      x     = "Log2 Fold Change",
+      y     = "-log10(Adjusted P-Value)",
+      color = "Status"
+    ) +
+    ggplot2::theme_bw() +
+    ggplot2::theme(
+      plot.title      = ggplot2::element_text(hjust = 0.5, face = "bold"),
+      axis.title      = ggplot2::element_text(face = "bold"),
+      legend.position = "top"
+    ) +
+    ggplot2::geom_vline(xintercept = c(-1, 1),
+                        linetype  = "dashed",
+                        color     = "black",
+                        linewidth = 0.5) +
+    ggplot2::geom_hline(yintercept = -log10(0.05),
+                        linetype  = "dashed",
+                        color     = "black",
+                        linewidth = 0.5)
+  
+  return(plot)
 }
 
